@@ -14,6 +14,10 @@
 
 """
 Custom scanner plugin for Plex Media Server for Formula 1 Broadcasts.
+
+Some notes:
+    - this runs in a python 2.7 environment(!) so no fancy f-strings, ordered dictionaries etc
+
 """
 
 import re, os, os.path
@@ -25,14 +29,22 @@ import json
 from time import sleep
 from pprint import pformat
 
-# I needed some plex libraries, you may need to adjust your plex install location accordingly
-sys.path.append("/usr/lib/plexmediaserver/Resources/Plug-ins-b23ab3896/Scanners.bundle/Contents/Resources/Common/")
+# plex probably sets this itself. maybe.
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "Plug-ins-*/Scanners.bundle/Contents/Resources/Common/")))
 
 import Media, VideoFiles, Stack
 
-# Expected format (smcgill1969):
-# Formula.1.2020x05.70th-Anniversary-GB.Race.SkyF1HD.1080p/02.Race.Session.mp4
-episode_regexp = 'Formula.1[\._ ](?P<year>[0-9]{4})x(?P<raceno>[0-9]{2})[\._ ](?P<location>.*)[\._ ](?P<session>.*?).SkyF1U?HD.(1080p|SD)/(?P<episode>.*?)[\._ ](?P<description>.*?).mp4'
+LOG_FILE = '/tmp/Formula1.log'
+DOWNLOAD_ART = True
+
+regexes = [
+    # Formula.1.2020x05.70th-Anniversary-GB.Race.SkyF1HD.1080p/02.Race.Session.mp4
+    ("smcgill1969", 'Formula.1[\._ ](?P<year>[0-9]{4})x(?P<raceno>[0-9]{2})[\._ ](?P<location>.*)[\._ ](?P<session>.*?).SkyF1U?HD.(1080p|SD)/(?P<episode>.*?)[\._ ](?P<description>.*?).mp4'),
+    # 01.F1.2024.R24.Abu.Dhabi.Grand.Prix.Drivers.Press.Conference.Sky.Sports.F1.UHD.2160P.mkv
+    ("egortech", '(?P<episode>[0-9]{2}).F1.(?P<year>[0-9]{4}).R(?P<raceno>[0-9]{2}).(?P<location>.*?).Grand.Prix.(?P<description>.*?).Sky.Sports.F1.UHD.(?P<quality>[0-9]+P).mkv'),
+    # Fallback should always be last
+    ("fallback", '.*.(mp4|mkv)')
+]
 
 sessions = {}
 sessions['Practice'] = 1
@@ -95,7 +107,7 @@ def download_art(filename, art_type, season, round, session, event, allow_fake=F
                     if event[art_type]:
                         download_url(event[art_type], filename)
                         found = True
-                    
+
             # get any image for this round instead
             if not found:
                 for event in eventdata['events']:
@@ -116,80 +128,108 @@ def download_art(filename, art_type, season, round, session, event, allow_fake=F
     return
 
 
-
-
 # Look for episodes.
 def Scan(path, files, mediaList, subdirs, language=None, root=None):
-    logging.basicConfig(filename='/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Logs/Formula1.log', level=logging.DEBUG)
-    logging.basicConfig(level=logging.DEBUG)
-
+    logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG)
+    logging.debug('Called Scan() with: path=%s, files=%s, mediaList=%s, subdirs=%s, language=%s, root=%s',
+                 path, files, mediaList, subdirs, language, root)
     # Scan for video files.
     VideoFiles.Scan(path, files, mediaList, subdirs, root)
 
     # Run the select regexp for all media files.
     for i in files:
         logging.debug('Processing: %s' % i)
-
         file = remove_prefix(i, root + '/')
-        match = re.search(episode_regexp, file)
-        if match:
-            logging.debug("Regex matched file:" + file)
+        found = False
+        for regex_name, episode_regexp in regexes:
+            if found:
+                break # no point re-processing a file that has already been processed
+            match = re.search(episode_regexp, file)
+            if match:
+                if regex_name == "fallback":
+                    logging.debug('Using FALLBACK regex for %s', file)
+                    try:
+                        year = int(re.search(r'(?:19|20)\d{2}', file).group(0)) if re.search(r'(?:19|20)\d{2}', file) else 2025
+                        description = file.rsplit('.', 1)[0].replace(".", " ") # remove file extension and replace dots with spaces
+                        tv_show = Media.Episode(
+                            description,    # show (inc year(season))
+                            0,              # season. Must be int, strings are not supported :(
+                            0,              # episode, indexed the files for a given show/location
+                            file,           # includes location string and ep name i.e. Spain Grand Prix Qualifying
+                            int(year))      # the actual year detected, same as used in part of the show name
 
-            # Extract data.
-            show = 'Formula 1'
-            year = int(match.group('year').strip())
-            show = "%s %s" % (show, year) # Make a composite show name like Formula1 + yyyy
-            location = match.group('location').replace("-"," ").replace("."," ")
+                    except Exception as e:
+                        logging.error(e)
 
-            # episode is just a meaningless index to get the different FP1-3, Qualifying, Race and other files to
-            # be listed under a location i.e. Spain, which again is mapped to season number - as season can not contain a string
-            episode = int(match.group('episode').strip())
+                    logging.debug("tv_show created")
+                    tv_show.parts.append(i)
+                    logging.debug("part added to tv_shows")
+                    mediaList.append(tv_show)
+                    logging.debug("added tv_show to mediaList")
+                    break
+                found = True
+                logging.debug("regex for %s MATCHED file: %s" % (regex_name, file))
 
-            # description will be the displayed filename when you browse to a location (season number)
-            description = (location + " " + match.group('description')).replace("."," ") # i.e. # spain grand prix free practice 3
-            library_name = "%sx%s: %s %s" %(year, match.group('raceno'), location, match.group('session'))
-            try:
-                session = sessions[match.group('session')]
-            except KeyError:
-                logging.warning('Couldnt match session "%s", Defaulting to 0' % match.group('session'))
-                session = 0
+                # Extract data.
+                show = 'Formula 1'
+                year = int(match.group('year').strip())
+                show = "%s %s" % (show, year) # Make a composite show name like Formula1 + yyyy
+                location = match.group('location').replace("-"," ").replace("."," ")
 
-            logging.debug("show: %s" % show)
-            logging.debug("location: %s" % location)
-            logging.debug("episode: %s" % episode)
-            logging.debug("description: %s" % description)
-            logging.debug("session: %s" % session)
-            logging.debug("library_name: %s" % library_name)
+                # episode is just a meaningless index to get the different FP1-3, Qualifying, Race and other files to
+                # be listed under a location i.e. Spain, which again is mapped to season number - as season can not contain a string
+                episode = int(match.group('episode').strip())
 
-            posterfile=os.path.dirname(i)+"/poster.jpg"
-            download_art(posterfile, "strPoster", year, int(match.group('raceno')), match.group('session'), location)
+                # description will be the displayed filename when you browse to a location (season number)
+                if 'description' in match.groupdict():
+                    description = (location + " " + match.group('description')).replace("."," ") # i.e. # spain grand prix free practice 3
+                else:
+                    description = (location + " " + match.group('session')).replace("."," ") # re-use the session name
 
-            thumbnail=i[:-3]+"jpg"
-            download_art(thumbnail, "strThumb", year, int(match.group('raceno')), match.group('session'), location, allow_fake=True)
+                library_name = "%sx%s: %s %s" %(year, match.group('raceno'), location, match.group('session'))
+                try:
+                    session = sessions[match.group('session')]
+                except KeyError:
+                    logging.warning('Couldnt match session "%s", Defaulting to 0' % match.group('session'))
+                    session = 0
 
-            fanart=os.path.dirname(i)+"/fanart.jpg"
-            download_art(fanart, "strThumb", year, int(match.group('raceno')), match.group('session'), location)
+                logging.debug("show: %s" % show)
+                logging.debug("location: %s" % location)
+                logging.debug("episode: %s" % episode)
+                logging.debug("description: %s" % description)
+                logging.debug("session: %s" % session)
+                logging.debug("library_name: %s" % library_name)
 
-            try:
-                tv_show = Media.Episode(
-                    library_name,         # show (inc year(season))
-                    session,              # season. Must be int, strings are not supported :(
-                    episode,              # episode, indexed the files for a given show/location
-                    description,          # includes location string and ep name i.e. Spain Grand Prix Qualifying
-                    year)                 # the actual year detected, same as used in part of the show name
+                if DOWNLOAD_ART:
+                    posterfile=os.path.dirname(i)+"/poster.jpg"
+                    download_art(posterfile, "strPoster", year, int(match.group('raceno')), match.group('session'), location)
 
-            except Exception as e:
-                logging.error(e)
-                # sys.exit 1
+                    thumbnail=i[:-3]+"jpg"
+                    download_art(thumbnail, "strThumb", year, int(match.group('raceno')), match.group('session'), location, allow_fake=True)
 
-            logging.debug("tv_show created")
-            tv_show.parts.append(i)
-            logging.debug("part added to tv_shows")
-            mediaList.append(tv_show)
-            logging.debug("added tv_show to mediaList")
-        else:
-            logging.debug("Regex FAILED to match file: "+file)
+                    fanart=os.path.dirname(i)+"/fanart.jpg"
+                    download_art(fanart, "strThumb", year, int(match.group('raceno')), match.group('session'), location)
 
+                try:
+                    tv_show = Media.Episode(
+                        library_name,         # show (inc year(season))
+                        session,              # season. Must be int, strings are not supported :(
+                        episode,              # episode, indexed the files for a given show/location
+                        description,          # includes location string and ep name i.e. Spain Grand Prix Qualifying
+                        year)                 # the actual year detected, same as used in part of the show name
+
+                except Exception as e:
+                    logging.error(e)
+
+                logging.debug("tv_show created")
+                tv_show.parts.append(i)
+                logging.debug("part added to tv_shows")
+                mediaList.append(tv_show)
+                logging.debug("added tv_show to mediaList")
+            else:
+                logging.debug("regex for %s FAILED to match file: %s" % (regex_name, file))
+
+    # This doesnt seem to happen often (ever?)
     for s in subdirs:
         nested_subdirs = []
         nested_files = []
@@ -204,7 +244,12 @@ def Scan(path, files, mediaList, subdirs, language=None, root=None):
     # Stack the results.
     Stack.Scan(path, files, mediaList, subdirs)
 
-import sys
-
 if __name__ == '__main__':
   print("You're not plex!")
+  if sys.version_info.major != 2 or sys.version_info.minor != 7:
+    print("Warning: Python %d.%d detected. Scanner runs under Python 2.7 in Plex" % (sys.version_info.major, sys.version_info.minor))
+  path = sys.argv[1]
+  files = [os.path.join(path, file) for file in os.listdir(path)]
+  media = []
+  Scan(path[1:], files, media, [])
+  print("F1: media |", media, "|")

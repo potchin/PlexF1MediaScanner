@@ -1,8 +1,6 @@
 PlexF1MediaScanner
 ==================
 
-Fork from [kennethx/PlexF1MediaScanner](https://github.com/kennethx/PlexF1MediaScanner). Props to them!
-
 This is a custom scanner for Plex for parsing data for Formula 1 race weekends. It should be the scanner for a library that **only**
 contains F1 content, it wont match anything else.
 
@@ -14,7 +12,11 @@ contains F1 content, it wont match anything else.
 
 ## Folder Structure
 
-The script expects the media to be formatted similar to the below:
+The script supports "smcgill1969" and "egortech" file naming formats and will fall back to a default which just uses the filename.
+
+`Formula.1.2020x05.70th-Anniversary-GB.Race.SkyF1HD.1080p/02.Race.Session.mp4` (smcgill1969)
+`01.F1.2024.R24.Abu.Dhabi.Grand.Prix.Drivers.Press.Conference.Sky.Sports.F1.UHD.2160P.mkv` (egortech)
+
 
 ```
 F1
@@ -37,7 +39,6 @@ The scanner (since I havent bothered writing a metadata agent) will try to pull 
 
 ## Troubleshooting
 
-Regular expressions aren't perfect (especially mine) and if your file and directory structure doesnt match what I think it is then stuff wont appear in your library.
-To see what went wrong with detection, check out the log file (`/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Logs/Formula1.log`). 
+To see what went wrong with detection, check out the log file (path found in `LOG_FILE` in the script).
 
 To force plex to retry, first get the ID of the your F1 Library (`/usr/lib/plexmediaserver/Plex\ Media\ Scanner --list`) then force an update: `/usr/lib/plexmediaserver/Plex\ Media\ Scanner --force --scan --refresh --section YOUR_SECTION_NUMBER`.
