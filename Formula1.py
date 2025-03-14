@@ -41,7 +41,7 @@ regexes = [
     # Formula.1.2020x05.70th-Anniversary-GB.Race.SkyF1HD.1080p/02.Race.Session.mp4
     ("smcgill1969", 'Formula.1[\._ ](?P<year>[0-9]{4})x(?P<raceno>[0-9]{2})[\._ ](?P<location>.*)[\._ ](?P<session>.*?).SkyF1U?HD.(1080p|SD)/(?P<episode>.*?)[\._ ](?P<description>.*?).mp4'),
     # 01.F1.2024.R24.Abu.Dhabi.Grand.Prix.Drivers.Press.Conference.Sky.Sports.F1.UHD.2160P.mkv
-    ("egortech", '(?P<episode>[0-9]{2}).F1.(?P<year>[0-9]{4}).R(?P<raceno>[0-9]{2}).(?P<location>.*?).Grand.Prix.(?P<description>.*?).Sky.Sports.F1.UHD.(?P<quality>[0-9]+P).mkv'),
+    ("egortech", '(?P<episode>[0-9]{2}).F1.(?P<year>[0-9]{4}).R(?P<raceno>[0-9]{2}).(?P<location>.*?).Grand.Prix.(?P<description>.*?).Sky.Sports.F1.UHD.(?P<quality>[0-9]+(P|p)).mkv'),
     # Fallback should always be last
     ("fallback", '.*.(mp4|mkv)')
 ]
@@ -138,25 +138,84 @@ def Scan(path, files, mediaList, subdirs, language=None, root=None):
 
     # Run the select regexp for all media files.
     for i in files:
-        logging.debug('Processing: %s' % i)
-        file = remove_prefix(i, root + '/')
-        found = False
-        for regex_name, episode_regexp in regexes:
-            if found:
-                break # no point re-processing a file that has already been processed
-            match = re.search(episode_regexp, file)
-            if match:
-                if regex_name == "fallback":
-                    logging.debug('Using FALLBACK regex for %s', file)
+        try:
+            logging.debug('Processing: %s' % i)
+            file = remove_prefix(i, root + '/')
+            found = False
+            for regex_name, episode_regexp in regexes:
+                if found:
+                    break # no point re-processing a file that has already been processed
+                match = re.search(episode_regexp, file)
+                if match:
+                    if regex_name == "fallback":
+                        logging.debug('Using FALLBACK regex for %s', file)
+                        try:
+                            year = int(re.search(r'(?:19|20)\d{2}', file).group(0)) if re.search(r'(?:19|20)\d{2}', file) else 2025
+                            description = file.rsplit('.', 1)[0].replace(".", " ") # remove file extension and replace dots with spaces
+                            tv_show = Media.Episode(
+                                description,    # show (inc year(season))
+                                0,              # season. Must be int, strings are not supported :(
+                                0,              # episode, indexed the files for a given show/location
+                                file,           # includes location string and ep name i.e. Spain Grand Prix Qualifying
+                                int(year))      # the actual year detected, same as used in part of the show name
+
+                        except Exception as e:
+                            logging.error(e)
+
+                        logging.debug("tv_show created")
+                        tv_show.parts.append(i)
+                        logging.debug("part added to tv_shows")
+                        mediaList.append(tv_show)
+                        logging.debug("added tv_show to mediaList")
+                        break
+                    found = True
+                    logging.debug("regex for %s MATCHED file: %s" % (regex_name, file))
+
+                    # Extract data.
+                    show = 'Formula 1'
+                    year = int(match.group('year').strip())
+                    # show = "%s %s" % (show, year) # Make a composite show name like Formula1 + yyyy
+                    location = match.group('location').replace("-"," ").replace("."," ")
+                    # episode is just a meaningless index to get the different FP1-3, Qualifying, Race and other files to
+                    # be listed under a location i.e. Spain, which again is mapped to season number - as season can not contain a string
+                    episode = int(match.group('episode').strip())
+
+                    if "session" in match.groupdict():
+                        # smcmgill releases are in different folders for each session (eg race, qualy)
+                        # and each folder will show as a different TV Season
+                        session = sessions[match.group('session')]
+                        description = (location + " " + session).replace("."," ") # re-use the session name
+                        library_name = "%sx%s: %s %s" %(year, match.group('raceno'), location, session)
+                    else:
+                        # igortech will have a TV season for each weekend
+                        session = match.group('raceno')
+                        description = match.group('description').replace(".", " ")
+                        library_name = "%sx%s: %s GP Weekend" %(year, match.group('raceno'), location)
+
+
+                    logging.debug("session: %s" % session)
+                    logging.debug("location: %s" % location)
+                    logging.debug("episode: %s" % episode)
+                    logging.debug("description: %s" % description)
+                    logging.debug("library_name: %s" % library_name)
+
+                    if DOWNLOAD_ART:
+                        posterfile=os.path.dirname(i)+"/poster.jpg"
+                        download_art(posterfile, "strPoster", year, int(match.group('raceno')), session, location)
+
+                        thumbnail=i[:-3]+"jpg"
+                        download_art(thumbnail, "strThumb", year, int(match.group('raceno')), session, location, allow_fake=True)
+
+                        fanart=os.path.dirname(i)+"/fanart.jpg"
+                        download_art(fanart, "strThumb", year, int(match.group('raceno')), session, location)
+
                     try:
-                        year = int(re.search(r'(?:19|20)\d{2}', file).group(0)) if re.search(r'(?:19|20)\d{2}', file) else 2025
-                        description = file.rsplit('.', 1)[0].replace(".", " ") # remove file extension and replace dots with spaces
                         tv_show = Media.Episode(
-                            description,    # show (inc year(season))
-                            0,              # season. Must be int, strings are not supported :(
-                            0,              # episode, indexed the files for a given show/location
-                            file,           # includes location string and ep name i.e. Spain Grand Prix Qualifying
-                            int(year))      # the actual year detected, same as used in part of the show name
+                            library_name,         # show (inc year(season))
+                            session,              # season. Must be int, strings are not supported :(
+                            episode,              # episode, indexed the files for a given show/location
+                            description,          # includes location string and ep name i.e. Spain Grand Prix Qualifying
+                            year)                 # the actual year detected, same as used in part of the show name
 
                     except Exception as e:
                         logging.error(e)
@@ -166,69 +225,12 @@ def Scan(path, files, mediaList, subdirs, language=None, root=None):
                     logging.debug("part added to tv_shows")
                     mediaList.append(tv_show)
                     logging.debug("added tv_show to mediaList")
-                    break
-                found = True
-                logging.debug("regex for %s MATCHED file: %s" % (regex_name, file))
-
-                # Extract data.
-                show = 'Formula 1'
-                year = int(match.group('year').strip())
-                show = "%s %s" % (show, year) # Make a composite show name like Formula1 + yyyy
-                location = match.group('location').replace("-"," ").replace("."," ")
-
-                # episode is just a meaningless index to get the different FP1-3, Qualifying, Race and other files to
-                # be listed under a location i.e. Spain, which again is mapped to season number - as season can not contain a string
-                episode = int(match.group('episode').strip())
-
-                # description will be the displayed filename when you browse to a location (season number)
-                if 'description' in match.groupdict():
-                    description = (location + " " + match.group('description')).replace("."," ") # i.e. # spain grand prix free practice 3
                 else:
-                    description = (location + " " + match.group('session')).replace("."," ") # re-use the session name
+                    logging.debug("regex for %s FAILED to match file: %s" % (regex_name, file))
 
-                library_name = "%sx%s: %s %s" %(year, match.group('raceno'), location, match.group('session'))
-                try:
-                    session = sessions[match.group('session')]
-                except KeyError:
-                    logging.warning('Couldnt match session "%s", Defaulting to 0' % match.group('session'))
-                    session = 0
-
-                logging.debug("show: %s" % show)
-                logging.debug("location: %s" % location)
-                logging.debug("episode: %s" % episode)
-                logging.debug("description: %s" % description)
-                logging.debug("session: %s" % session)
-                logging.debug("library_name: %s" % library_name)
-
-                if DOWNLOAD_ART:
-                    posterfile=os.path.dirname(i)+"/poster.jpg"
-                    download_art(posterfile, "strPoster", year, int(match.group('raceno')), match.group('session'), location)
-
-                    thumbnail=i[:-3]+"jpg"
-                    download_art(thumbnail, "strThumb", year, int(match.group('raceno')), match.group('session'), location, allow_fake=True)
-
-                    fanart=os.path.dirname(i)+"/fanart.jpg"
-                    download_art(fanart, "strThumb", year, int(match.group('raceno')), match.group('session'), location)
-
-                try:
-                    tv_show = Media.Episode(
-                        library_name,         # show (inc year(season))
-                        session,              # season. Must be int, strings are not supported :(
-                        episode,              # episode, indexed the files for a given show/location
-                        description,          # includes location string and ep name i.e. Spain Grand Prix Qualifying
-                        year)                 # the actual year detected, same as used in part of the show name
-
-                except Exception as e:
-                    logging.error(e)
-
-                logging.debug("tv_show created")
-                tv_show.parts.append(i)
-                logging.debug("part added to tv_shows")
-                mediaList.append(tv_show)
-                logging.debug("added tv_show to mediaList")
-            else:
-                logging.debug("regex for %s FAILED to match file: %s" % (regex_name, file))
-
+        except Exception as e:
+            logging.error("Exception details: %s" % e)
+            logging.error("Full traceback:", exc_info=True)
     # This doesnt seem to happen often (ever?)
     for s in subdirs:
         nested_subdirs = []
